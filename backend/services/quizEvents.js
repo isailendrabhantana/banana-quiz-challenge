@@ -1,5 +1,34 @@
 import { EventEmitter } from "node:events";
+
 export const quizEvents = new EventEmitter();
-quizEvents.on("quiz:started", e => console.log(`[event] quiz:started user=${e.userId} quiz=${e.quizId}`));
-quizEvents.on("quiz:answered", e => console.log(`[event] quiz:answered correct=${e.correct} score=${e.score}`));
-quizEvents.on("quiz:completed", e => console.log(`[event] quiz:completed score=${e.score}`));
+
+function logEvent(eventName, details) {
+  const timestamp = new Date().toISOString();
+
+  console.log(`[event] ${timestamp} ${eventName}`, details);
+}
+
+quizEvents.on("quiz:started", (event) => {
+  logEvent("quiz:started", {
+    user: event.userId,
+    quiz: event.quizId,
+  });
+});
+
+quizEvents.on("quiz:answered", (event) => {
+  logEvent("quiz:answered", {
+    user: event.userId,
+    quiz: event.quizId,
+    question: event.questionNumber,
+    correct: event.correct,
+    score: event.score,
+  });
+});
+
+quizEvents.on("quiz:completed", (event) => {
+  logEvent("quiz:completed", {
+    user: event.userId,
+    quiz: event.quizId,
+    score: event.score,
+  });
+});

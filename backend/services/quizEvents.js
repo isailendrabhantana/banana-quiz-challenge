@@ -12,6 +12,8 @@ quizEvents.on("quiz:started", (event) => {
   logEvent("quiz:started", {
     user: event.userId,
     quiz: event.quizId,
+    difficulty: event.difficulty,
+    timeLimitSeconds: event.timeLimitSeconds,
   });
 });
 
@@ -21,6 +23,15 @@ quizEvents.on("quiz:answered", (event) => {
     quiz: event.quizId,
     question: event.questionNumber,
     correct: event.correct,
+    score: event.score,
+  });
+});
+
+quizEvents.on("quiz:timedout", (event) => {
+  logEvent("quiz:timedout", {
+    user: event.userId,
+    quiz: event.quizId,
+    question: event.questionNumber,
     score: event.score,
   });
 });

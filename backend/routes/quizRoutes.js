@@ -5,14 +5,19 @@ import { quizEvents } from "../services/quizEvents.js";
 
 const router = express.Router();
 
-const TOTAL_QUESTIONS = 10;
-const POINTS_PER_QUESTION = 10;
+const TOTAL = 10;
+const POINTS = 10;
+
+const DIFFICULTY_LIMITS = Object.freeze({
+  easy: 25,
+  intermediate: 20,
+  hard: 15,
+});
 
 const quizzes = new Map();
 
 function getOwnedQuiz(req, res) {
-  const quizId = req.body?.quizId;
-  const quiz = quizzes.get(quizId);
+  const quiz = quizzes.get(req.body?.quizId);
 
   if (!quiz || quiz.userId !== req.session.userId) {
     res.status(404).json({
@@ -25,69 +30,106 @@ function getOwnedQuiz(req, res) {
   return quiz;
 }
 
-function isValidAnswer(answer) {
-  if (answer === undefined || answer === null) {
-    return false;
-  }
-
-  const value = String(answer).trim();
-
-  if (value === "") {
-    return false;
-  }
-
-  return /^-?\d+$/.test(value);
-}
-
-function safeQuestion(quiz) {
+function safeQuestion(q) {
   return {
-    quizId: quiz.id,
-    questionNumber: quiz.questionNumber,
-    totalQuestions: TOTAL_QUESTIONS,
-    questionImage: quiz.current.questionImage,
-    score: quiz.score,
-    source: quiz.current.source,
+    quizId: q.id,
+    questionNumber: q.questionNumber,
+    totalQuestions: TOTAL,
+    questionImage: q.current.questionImage,
+    score: q.score,
+    source: q.current.source,
+    difficulty: q.difficulty,
+    timeLimitSeconds: q.timeLimitSeconds,
+    deadlineAt: q.deadlineAt,
   };
 }
 
-router.post("/start", async (req, res) => {
-  try {
-    const quizId = randomUUID();
-    const current = await getQuestionWithFallback(0);
+function getDifficulty(value) {
+  const difficulty = String(value || "").toLowerCase();
 
-    const quiz = {
-      id: quizId,
-      userId: req.session.userId,
-      score: 0,
-      questionNumber: 1,
-      answered: false,
-      completed: false,
-      current,
-    };
+  return DIFFICULTY_LIMITS[difficulty] ? difficulty : null;
+}
 
-    quizzes.set(quizId, quiz);
+function hasTimedOut(quiz) {
+  return Date.now() >= quiz.deadlineAt;
+}
 
-    quizEvents.emit("quiz:started", {
+function timeoutQuizQuestion(quiz) {
+  quiz.answered = true;
+  quiz.timedOut = true;
+  quiz.completed = quiz.questionNumber === TOTAL;
+
+  quizEvents.emit("quiz:timedout", {
+    userId: quiz.userId,
+    quizId: quiz.id,
+    questionNumber: quiz.questionNumber,
+    score: quiz.score,
+  });
+
+  if (quiz.completed) {
+    quizEvents.emit("quiz:completed", {
       userId: quiz.userId,
       quizId: quiz.id,
-    });
-
-    res.status(201).json(safeQuestion(quiz));
-  } catch (error) {
-    console.error("Failed to start quiz:", error);
-
-    res.status(500).json({
-      message: "Unable to start the quiz. Please try again.",
+      score: quiz.score,
     });
   }
+}
+
+router.post("/start", async (req, res) => {
+  const difficulty = getDifficulty(req.body?.difficulty);
+
+  if (!difficulty) {
+    return res.status(400).json({
+      message: "Choose a difficulty: easy, intermediate or hard.",
+    });
+  }
+
+  const id = randomUUID();
+
+  const current = await getQuestionWithFallback(0);
+
+  const timeLimitSeconds = DIFFICULTY_LIMITS[difficulty];
+
+  const startedAt = Date.now();
+
+  const deadlineAt = startedAt + timeLimitSeconds * 1000;
+
+  const quiz = {
+    id,
+    userId: req.session.userId,
+
+    score: 0,
+    questionNumber: 1,
+
+    answered: false,
+    timedOut: false,
+    completed: false,
+
+    difficulty,
+    timeLimitSeconds,
+
+    startedAt,
+    deadlineAt,
+
+    current,
+  };
+
+  quizzes.set(id, quiz);
+
+  quizEvents.emit("quiz:started", {
+    userId: quiz.userId,
+    quizId: id,
+    difficulty,
+    timeLimitSeconds,
+  });
+
+  return res.status(201).json(safeQuestion(quiz));
 });
 
 router.post("/answer", (req, res) => {
   const quiz = getOwnedQuiz(req, res);
 
-  if (!quiz) {
-    return;
-  }
+  if (!quiz) return;
 
   if (quiz.completed) {
     return res.status(400).json({
@@ -101,23 +143,43 @@ router.post("/answer", (req, res) => {
     });
   }
 
-  const answer = req.body?.answer;
+  // The server timestamp is authoritative.
+  // Changing the browser timer cannot extend the quiz.
+  if (hasTimedOut(quiz)) {
+    timeoutQuizQuestion(quiz);
 
-  if (!isValidAnswer(answer)) {
-    return res.status(400).json({
-      message: "Please enter a valid whole number.",
+    return res.status(408).json({
+      timedOut: true,
+      score: quiz.score,
+      questionNumber: quiz.questionNumber,
+      totalQuestions: TOTAL,
+      completed: quiz.completed,
+      message: "Time is up! You did not receive points for this question.",
     });
   }
 
-  const submittedAnswer = Number(answer);
-  const correct = submittedAnswer === quiz.current.solution;
+  const answer = req.body?.answer;
+
+  if (
+    answer === undefined ||
+    answer === null ||
+    String(answer).trim() === "" ||
+    !Number.isFinite(Number(answer))
+  ) {
+    return res.status(400).json({
+      message: "Please enter a valid number.",
+    });
+  }
+
+  const correct = Number(answer) === quiz.current.solution;
 
   if (correct) {
-    quiz.score += POINTS_PER_QUESTION;
+    quiz.score += POINTS;
   }
 
   quiz.answered = true;
-  quiz.completed = quiz.questionNumber === TOTAL_QUESTIONS;
+  quiz.timedOut = false;
+  quiz.completed = quiz.questionNumber === TOTAL;
 
   quizEvents.emit("quiz:answered", {
     userId: quiz.userId,
@@ -135,24 +197,58 @@ router.post("/answer", (req, res) => {
     });
   }
 
-  res.json({
+  return res.json({
     correct,
     score: quiz.score,
     questionNumber: quiz.questionNumber,
-    totalQuestions: TOTAL_QUESTIONS,
+    totalQuestions: TOTAL,
     completed: quiz.completed,
+    timedOut: false,
     message: correct
-      ? `Correct! You earned ${POINTS_PER_QUESTION} points.`
+      ? `Correct! You earned ${POINTS} points.`
       : "Not quite. Try the next puzzle!",
+  });
+});
+
+router.post("/timeout", (req, res) => {
+  const quiz = getOwnedQuiz(req, res);
+
+  if (!quiz) return;
+
+  if (quiz.completed) {
+    return res.status(400).json({
+      message: "This quiz has already finished.",
+    });
+  }
+
+  if (quiz.answered) {
+    return res.status(409).json({
+      message: "This question has already been answered.",
+    });
+  }
+
+  if (!hasTimedOut(quiz)) {
+    return res.status(400).json({
+      message: "The timer has not expired yet.",
+    });
+  }
+
+  timeoutQuizQuestion(quiz);
+
+  return res.json({
+    timedOut: true,
+    score: quiz.score,
+    questionNumber: quiz.questionNumber,
+    totalQuestions: TOTAL,
+    completed: quiz.completed,
+    message: "Time is up! You did not receive points for this question.",
   });
 });
 
 router.post("/next", async (req, res) => {
   const quiz = getOwnedQuiz(req, res);
 
-  if (!quiz) {
-    return;
-  }
+  if (!quiz) return;
 
   if (quiz.completed) {
     return res.status(400).json({
@@ -166,23 +262,20 @@ router.post("/next", async (req, res) => {
     });
   }
 
-  try {
-    const nextQuestionNumber = quiz.questionNumber + 1;
+  const nextNumber = quiz.questionNumber + 1;
 
-    const current = await getQuestionWithFallback(nextQuestionNumber - 1);
+  quiz.current = await getQuestionWithFallback(nextNumber - 1);
 
-    quiz.current = current;
-    quiz.questionNumber = nextQuestionNumber;
-    quiz.answered = false;
+  quiz.questionNumber = nextNumber;
 
-    res.json(safeQuestion(quiz));
-  } catch (error) {
-    console.error("Failed to load next question:", error);
+  quiz.answered = false;
+  quiz.timedOut = false;
 
-    res.status(500).json({
-      message: "Unable to load the next question.",
-    });
-  }
+  quiz.startedAt = Date.now();
+
+  quiz.deadlineAt = quiz.startedAt + quiz.timeLimitSeconds * 1000;
+
+  return res.json(safeQuestion(quiz));
 });
 
 export default router;

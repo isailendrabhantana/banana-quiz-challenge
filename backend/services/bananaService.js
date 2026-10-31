@@ -22,40 +22,41 @@ function demoImage(label) {
     <svg xmlns="http://www.w3.org/2000/svg"
          width="640"
          height="300">
-
-      <rect
-        width="100%"
-        height="100%"
-        rx="20"
-        fill="#fff7df"
-      />
-
-      <text
-        x="320"
-        y="135"
-        text-anchor="middle"
-        font-family="Arial"
-        font-size="52"
-        font-weight="bold"
-        fill="#3b2b13"
-      >
+      <rect width="100%" height="100%" rx="20" fill="#fff7df"/>
+      <text x="320" y="135"
+            text-anchor="middle"
+            font-family="Arial"
+            font-size="52"
+            font-weight="bold"
+            fill="#3b2b13">
         ${label}
       </text>
-
-      <text
-        x="320"
-        y="210"
-        text-anchor="middle"
-        font-family="Arial"
-        font-size="18"
-        fill="#79664b"
-      >
+      <text x="320" y="210"
+            text-anchor="middle"
+            font-family="Arial"
+            font-size="18"
+            fill="#79664b">
         Demo puzzle · external API unavailable
       </text>
     </svg>
   `;
 
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+// Check whether the API returned a valid image URL.
+function isValidQuestionUrl(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 export async function getQuestion(index = 0) {
@@ -68,6 +69,9 @@ export async function getQuestion(index = 0) {
   try {
     const response = await fetch(API_URL, {
       signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+      },
     });
 
     if (!response.ok) {
@@ -76,16 +80,25 @@ export async function getQuestion(index = 0) {
 
     const data = await response.json();
 
-    if (
-      typeof data.question !== "string" ||
-      !data.question.startsWith("http")
-    ) {
-      throw new Error("Banana API returned an invalid question image.");
+    // Check that the API returned an object.
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("Banana API returned an invalid response.");
     }
 
+    // Validate the question image URL.
+    if (!isValidQuestionUrl(data.question)) {
+      throw new Error("Banana API returned an invalid question image URL.");
+    }
+
+    // Validate the puzzle solution.
     const solution = Number(data.solution);
 
-    if (!Number.isFinite(solution)) {
+    if (
+      data.solution === null ||
+      data.solution === undefined ||
+      String(data.solution).trim() === "" ||
+      !Number.isFinite(solution)
+    ) {
       throw new Error("Banana API returned an invalid solution.");
     }
 
@@ -112,7 +125,6 @@ export async function getQuestionWithFallback(index = 0) {
     return await getQuestion(index);
   } catch (error) {
     console.warn(`Banana API unavailable: ${error.message}`);
-
     console.warn("Using a local demo puzzle instead.");
 
     const [label, answer] = demos[index % demos.length];
